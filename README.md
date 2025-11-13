@@ -32,30 +32,43 @@ go build
 
 ## How It Works
 
-1. **URL Validation** - Validates Google Maps/share.google URLs
-2. **URL Normalization** - Converts any Google Maps URL to canonical `/maps/place/` format:
-   - Follows redirects with legitimate browser headers
+1. **URL Validation** (`main.go`) - Validates Google Maps/share.google URLs
+
+2. **Unified Scraping** (`scraper/`) - ONE chromedp session does EVERYTHING:
+   - Follows HTTP redirects with legitimate browser headers
    - Detects URL type (direct maps/place, search page, or unknown)
-   - Extracts maps/place link from search pages using non-invasive strategies
-   - Uses realistic Chrome/macOS fingerprint for personal use
-3. **chromedp Scraping** - Uses headless Chrome to extract:
-   - Business name
-   - Address
-   - Phone number
-   - Website
-   - Coordinates
-   - Business hours
-   - Business photo
-4. **Schedule Parsing** - Normalizes hours to clean format:
-   - Spanish → English day names
+   - For search pages: extracts the maps/place link (same session)
+   - Navigates to maps/place page
+   - Extracts: name, address, phone, website, coordinates
+   - Clicks hours button → scrapes full schedule text
+   - Extracts image URL (tries multiple selectors)
+   - Cleans aria-label prefixes automatically
+
+3. **Schedule Parsing** (`schedule/`) - Pure text parser:
+   - Spanish/English → normalized English day names
    - Consolidates consecutive days (Mon-Fri vs 5 separate entries)
    - Output: "Mon-Fri 08:00-13:00, 15:00-18:00; Sat-Sun Closed"
-5. **Image Processing** - Downloads and embeds business photo:
-   - Extracts photo URL from Google Maps
-   - Downloads image and encodes to base64
-   - Embeds in vCard for Apple Contacts compatibility
-6. **vCard Generation** - Creates standard vCard 3.0 format
-7. **File Output** - Saves as `BusinessName.vcf`
+
+4. **Image Download** (`imageextractor/`) - Simple HTTP download + base64 encoding
+
+5. **vCard Generation** (`main.go`) - Creates standard vCard 3.0 format
+
+6. **File Output** (`main.go`) - Saves as `BusinessName.vcf`
+
+## Architecture
+
+Clean, minimal design:
+
+**Modules:**
+- **`scraper/`** - ONE chromedp session for URL normalization + ALL data extraction
+- **`schedule/`** - Pure text parser (no dependencies)
+- **`imageextractor/`** - Pure HTTP download function (no chromedp)
+- **`main.go`** - Clean orchestration (70 lines, zero business logic)
+
+**Key Design Principles:**
+- ONE chromedp session total (efficient)
+- No nested abstractions
+- Code is self-documenting
 
 ## Supported URL Formats
 

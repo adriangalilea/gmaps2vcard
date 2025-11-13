@@ -1,50 +1,27 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
-	"time"
 
 	"gmaps2vcard/imageextractor"
 	"gmaps2vcard/schedule"
-	"gmaps2vcard/urlnormalizer"
+	"gmaps2vcard/scraper"
 
-	"github.com/chromedp/chromedp"
 	"github.com/emersion/go-vcard"
 )
 
-type BusinessData struct {
-	Name         string
-	Address      string
-	Phone        string
-	Website      string
-	Hours        string // Raw hours text from scraping
-	HoursClean   string // Formatted hours from schedule parser
-	PhotoURL     string
-	PhotoBase64  string
-	Latitude     string
-	Longitude    string
-}
-
-var debugSchedule bool
-
 func main() {
-	flag.BoolVar(&debugSchedule, "debug-schedule", false, "Enable debug logging for schedule parsing")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: gmaps2vcard [options] <google-maps-url>")
-		fmt.Fprintln(os.Stderr, "\nOptions:")
-		fmt.Fprintln(os.Stderr, "  -debug-schedule  Enable debug logging for schedule parsing")
+		fmt.Fprintln(os.Stderr, "Usage: gmaps2vcard <google-maps-url>")
 		fmt.Fprintln(os.Stderr, "\nExample:")
 		fmt.Fprintln(os.Stderr, "  gmaps2vcard 'https://share.google/w4UZTre3NvPyC3b3Q'")
-		fmt.Fprintln(os.Stderr, "  gmaps2vcard -debug-schedule 'https://share.google/w4UZTre3NvPyC3b3Q'")
 		os.Exit(1)
 	}
 
@@ -56,56 +33,35 @@ func main() {
 	}
 	fmt.Println("✓ Valid Google Maps URL")
 
-	// Normalize URL to maps/place format
-	fmt.Println("→ Normalizing URL...")
-	urlNormalizer := urlnormalizer.NewNormalizer(urlnormalizer.DefaultConfig())
-	normResult := urlNormalizer.Normalize(inputURL)
-	if !normResult.Success {
-		log.Fatalf("Error normalizing URL: %v", normResult.Error)
-	}
-	fmt.Printf("✓ Normalized to maps/place URL: %.80s...\n", normResult.NormalizedURL)
-
-	mapsURL := normResult.NormalizedURL
-
-	// Extract business data
+	// Extract ALL data in ONE chromedp session (handles URL normalization too)
 	fmt.Println("→ Extracting business data...")
-	business, err := extractBusinessData(mapsURL)
+	business, err := scraper.Extract(inputURL, nil)
 	if err != nil {
-		log.Fatalf("Error extracting data: %v", err)
+		log.Fatalf("Error scraping data: %v", err)
 	}
 
-	// Parse and format schedule
+	// Parse schedule (if hours found)
+	var hoursClean string
 	if business.Hours != "" {
-		fmt.Println("→ Parsing schedule...")
-		parsedSchedule, err := schedule.Parse(business.Hours, debugSchedule)
+		parsedSchedule, err := schedule.Parse(business.Hours, false)
 		if err != nil {
 			log.Printf("⚠ Warning: schedule parsing failed: %v", err)
 		} else {
-			business.HoursClean = parsedSchedule.Format(debugSchedule)
-			if debugSchedule {
-				log.Printf("[DEBUG] Raw hours: %q", business.Hours)
-				log.Printf("[DEBUG] Clean hours: %q", business.HoursClean)
-			}
+			hoursClean = parsedSchedule.Format(false)
 		}
 	}
 
-	// Extract business image
-	fmt.Println("→ Extracting business image...")
-	imageConfig := imageextractor.DefaultConfig()
-	imageConfig.DebugLevel = imageextractor.DebugVerbose
-	extractor := imageextractor.NewExtractor(imageConfig)
-	imageResult := extractor.Extract(mapsURL)
-
-	if imageResult.Found {
-		business.PhotoURL = imageResult.ImageURL
-		business.PhotoBase64 = imageResult.ImageBase64
-		fmt.Printf("✓ Business image found: %.80s...\n", imageResult.ImageURL)
-	} else {
-		fmt.Fprintf(os.Stderr, "⚠ Warning: Business image not found: %v\n", imageResult.Error)
+	// Download and encode image (if URL found)
+	var photoBase64 string
+	if business.PhotoURL != "" {
+		photoBase64, err = imageextractor.DownloadAndEncode(business.PhotoURL)
+		if err != nil {
+			log.Printf("⚠ Warning: image download failed: %v", err)
+		}
 	}
 
 	// Print extracted data
-	printBusinessData(business)
+	printBusinessData(business, hoursClean)
 
 	// Validate we have at least a name
 	if business.Name == "" {
@@ -114,7 +70,7 @@ func main() {
 
 	// Generate vCard
 	fmt.Println("\n→ Generating vCard...")
-	vcardData := generateVCard(business)
+	vcardData := generateVCard(business, hoursClean, photoBase64)
 
 	// Save to file
 	filename := strings.ReplaceAll(business.Name, "/", "-") + ".vcf"
@@ -153,130 +109,15 @@ func isValidGoogleMapsURL(rawURL string) bool {
 	return false
 }
 
-func extractBusinessData(pageURL string) (*BusinessData, error) {
-	business := &BusinessData{}
-
-	// Extract coordinates from URL
-	coordsRe := regexp.MustCompile(`@(-?\d+\.\d+),(-?\d+\.\d+)`)
-	if matches := coordsRe.FindStringSubmatch(pageURL); len(matches) == 3 {
-		business.Latitude = matches[1]
-		business.Longitude = matches[2]
-	}
-
-	// Extract name from URL first (fallback)
-	nameRe := regexp.MustCompile(`/place/([^/@?]+)`)
-	if matches := nameRe.FindStringSubmatch(pageURL); len(matches) > 1 {
-		business.Name = strings.ReplaceAll(url.QueryEscape(matches[1]), "+", " ")
-		business.Name, _ = url.QueryUnescape(business.Name)
-	}
-
-	// If it's a search URL, extract from q= parameter
-	if u, err := url.Parse(pageURL); err == nil {
-		if q := u.Query().Get("q"); q != "" {
-			business.Name = q
-		}
-	}
-
-	// Use chromedp to scrape full details if we have a Maps URL
-	if strings.Contains(pageURL, "/maps/place/") {
-		if err := scrapeWithChromedp(pageURL, business); err != nil {
-			// Chromedp failed, but we still have basic data from URL
-			fmt.Fprintf(os.Stderr, "⚠ Warning: chromedp scraping failed: %v\n", err)
-		}
-	}
-
-	return business, nil
-}
-
-func scrapeWithChromedp(pageURL string, business *BusinessData) error {
-	ctx, cancel := chromedp.NewContext(context.Background())
-	defer cancel()
-
-	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	var name, address, phone, website, hours string
-
-	err := chromedp.Run(ctx,
-		chromedp.Navigate(pageURL),
-		chromedp.WaitReady("body"),
-		chromedp.Sleep(3*time.Second), // Wait for dynamic content
-
-		// Extract business name
-		chromedp.Text(`h1`, &name, chromedp.NodeVisible, chromedp.ByQuery),
-
-		// Extract address
-		chromedp.AttributeValue(`button[data-item-id="address"]`, "aria-label", &address, nil, chromedp.ByQuery),
-
-		// Extract phone
-		chromedp.AttributeValue(`button[data-item-id*="phone"]`, "aria-label", &phone, nil, chromedp.ByQuery),
-
-		// Extract website
-		chromedp.AttributeValue(`a[data-item-id="authority"]`, "href", &website, nil, chromedp.ByQuery),
-	)
-
-	// Try to extract hours (best effort - don't fail if not found)
-	if err == nil {
-		// First try to click the hours section to expand full schedule
-		chromedp.Run(ctx,
-			chromedp.Click(`div.OqCZI.fontBodyMedium.WVXvdc`, chromedp.ByQuery),
-			chromedp.Sleep(500*time.Millisecond),
-		)
-
-		// Then get the hours text from the expanded section
-		chromedp.Run(ctx,
-			chromedp.Text(`div.OqCZI.fontBodyMedium.WVXvdc`, &hours, chromedp.NodeVisible, chromedp.ByQuery),
-		)
-	}
-
-	if err != nil {
-		return err
-	}
-
-	// Update business data with scraped info (clean aria-label prefixes)
-	if name != "" {
-		business.Name = name
-	}
-	if address != "" {
-		business.Address = cleanAriaLabel(address)
-	}
-	if phone != "" {
-		business.Phone = cleanAriaLabel(phone)
-	}
-	if website != "" {
-		business.Website = website
-	}
-	if hours != "" {
-		business.Hours = hours
-	}
-
-	return nil
-}
-
-func cleanAriaLabel(s string) string {
-	// Remove common aria-label prefixes like "Dirección: ", "Teléfono: ", etc.
-	prefixes := []string{
-		"Dirección: ", "Address: ",
-		"Teléfono: ", "Phone: ", "Telephone: ",
-		"Sitio web: ", "Website: ",
-	}
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(s, prefix) {
-			return strings.TrimPrefix(s, prefix)
-		}
-	}
-	return s
-}
-
-func printBusinessData(business *BusinessData) {
+func printBusinessData(business *scraper.BusinessData, hoursClean string) {
 	fmt.Println("\nExtracted information:")
 	fmt.Printf("  Name: %s\n", orNotFound(business.Name))
 	fmt.Printf("  Address: %s\n", orNotFound(business.Address))
 	fmt.Printf("  Phone: %s\n", orNotFound(business.Phone))
 	fmt.Printf("  Website: %s\n", orNotFound(business.Website))
 
-	if business.HoursClean != "" {
-		fmt.Printf("  Hours: %s\n", business.HoursClean)
+	if hoursClean != "" {
+		fmt.Printf("  Hours: %s\n", hoursClean)
 	} else if business.Hours != "" {
 		fmt.Printf("  Hours (raw): %s\n", business.Hours)
 	} else {
@@ -296,7 +137,7 @@ func orNotFound(s string) string {
 	return s
 }
 
-func generateVCard(business *BusinessData) string {
+func generateVCard(business *scraper.BusinessData, hoursClean, photoBase64 string) string {
 	card := make(vcard.Card)
 
 	// Version (required)
@@ -316,7 +157,7 @@ func generateVCard(business *BusinessData) string {
 	// Address
 	if business.Address != "" {
 		card.Set(vcard.FieldAddress, &vcard.Field{
-			Value: ";;"+business.Address+";;;;",
+			Value: ";;" + business.Address + ";;;;",
 			Params: vcard.Params{
 				vcard.ParamType: []string{"WORK"},
 			},
@@ -326,35 +167,29 @@ func generateVCard(business *BusinessData) string {
 	// Phone
 	if business.Phone != "" {
 		card.Add(vcard.FieldTelephone, &vcard.Field{
-			Value: business.Phone,
-			Params: vcard.Params{
-				vcard.ParamType: []string{"WORK"},
-			},
+			Value:  business.Phone,
+			Params: vcard.Params{vcard.ParamType: []string{"WORK"}},
 		})
 	}
 
 	// Website
 	if business.Website != "" {
 		card.Add(vcard.FieldURL, &vcard.Field{
-			Value: business.Website,
-			Params: vcard.Params{
-				vcard.ParamType: []string{"WORK"},
-			},
+			Value:  business.Website,
+			Params: vcard.Params{vcard.ParamType: []string{"WORK"}},
 		})
 	}
 
 	// Geo coordinates
 	if business.Latitude != "" && business.Longitude != "" {
 		geoValue := fmt.Sprintf("%s;%s", business.Latitude, business.Longitude)
-		card.Set("GEO", &vcard.Field{
-			Value: geoValue,
-		})
+		card.Set("GEO", &vcard.Field{Value: geoValue})
 	}
 
-	// Business photo (use base64-encoded data for Apple Contacts compatibility)
-	if business.PhotoBase64 != "" {
+	// Business photo
+	if photoBase64 != "" {
 		card.Add(vcard.FieldPhoto, &vcard.Field{
-			Value: business.PhotoBase64,
+			Value: photoBase64,
 			Params: vcard.Params{
 				"ENCODING": []string{"b"},
 				"TYPE":     []string{"JPEG"},
@@ -362,8 +197,8 @@ func generateVCard(business *BusinessData) string {
 		})
 	}
 
-	// Business hours in NOTE field (prefer clean format)
-	hoursToUse := business.HoursClean
+	// Business hours
+	hoursToUse := hoursClean
 	if hoursToUse == "" {
 		hoursToUse = business.Hours
 	}
