@@ -16,6 +16,7 @@ import (
 
 	"github.com/chromedp/chromedp"
 	"github.com/emersion/go-vcard"
+	"gmaps2vcard/imageextractor"
 )
 
 type BusinessData struct {
@@ -25,6 +26,8 @@ type BusinessData struct {
 	Website      string
 	Hours        string // Raw hours text from scraping
 	HoursClean   string // Formatted hours from schedule parser
+	PhotoURL     string
+	PhotoBase64  string
 	Latitude     string
 	Longitude    string
 }
@@ -83,6 +86,21 @@ func main() {
 				log.Printf("[DEBUG] Clean hours: %q", business.HoursClean)
 			}
 		}
+	}
+
+	// Extract business image
+	fmt.Println("→ Extracting business image...")
+	imageConfig := imageextractor.DefaultConfig()
+	imageConfig.DebugLevel = imageextractor.DebugVerbose
+	extractor := imageextractor.NewExtractor(imageConfig)
+	imageResult := extractor.Extract(finalURL)
+
+	if imageResult.Found {
+		business.PhotoURL = imageResult.ImageURL
+		business.PhotoBase64 = imageResult.ImageBase64
+		fmt.Printf("✓ Business image found: %.80s...\n", imageResult.ImageURL)
+	} else {
+		fmt.Fprintf(os.Stderr, "⚠ Warning: Business image not found: %v\n", imageResult.Error)
 	}
 
 	// Print extracted data
@@ -301,6 +319,7 @@ func printBusinessData(business *BusinessData) {
 		fmt.Printf("  Hours: (not found)\n")
 	}
 
+	fmt.Printf("  Photo: %s\n", orNotFound(business.PhotoURL))
 	if business.Latitude != "" && business.Longitude != "" {
 		fmt.Printf("  Location: %s, %s\n", business.Latitude, business.Longitude)
 	}
@@ -365,6 +384,17 @@ func generateVCard(business *BusinessData) string {
 		geoValue := fmt.Sprintf("%s;%s", business.Latitude, business.Longitude)
 		card.Set("GEO", &vcard.Field{
 			Value: geoValue,
+		})
+	}
+
+	// Business photo (use base64-encoded data for Apple Contacts compatibility)
+	if business.PhotoBase64 != "" {
+		card.Add(vcard.FieldPhoto, &vcard.Field{
+			Value: business.PhotoBase64,
+			Params: vcard.Params{
+				"ENCODING": []string{"b"},
+				"TYPE":     []string{"JPEG"},
+			},
 		})
 	}
 
