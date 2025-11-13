@@ -40,12 +40,13 @@ go build
    - For search pages: extracts the maps/place link (same session)
    - Navigates to maps/place page
    - Extracts: name, address, phone, website, coordinates
-   - Clicks hours button → scrapes full schedule text
-   - Extracts image URL (tries multiple selectors)
+   - Multi-strategy hours extraction: tries multiple button selectors → extracts from table structure → fallback to body text
+   - Extracts image URL (tries multiple selectors with timeouts)
    - Cleans aria-label prefixes automatically
 
 3. **Schedule Parsing** (`schedule/`) - Pure text parser:
    - Spanish/English → normalized English day names
+   - Spanish time format ("De 8:00 a 13:00") → standard format ("08:00-13:00")
    - Consolidates consecutive days (Mon-Fri vs 5 separate entries)
    - Output: "Mon-Fri 08:00-13:00, 15:00-18:00; Sat-Sun Closed"
 

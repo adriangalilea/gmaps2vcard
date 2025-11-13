@@ -236,6 +236,11 @@ func extractBusinessData(ctx context.Context, pageURL string, business *Business
 	business.Phone = cleanAriaLabel(phone)
 	business.Website = website
 
+	log.Printf("[Scraper] Raw address: %q", address)
+	log.Printf("[Scraper] Cleaned address: %q", business.Address)
+	log.Printf("[Scraper] Raw phone: %q", phone)
+	log.Printf("[Scraper] Cleaned phone: %q", business.Phone)
+
 	// Extract image URL FIRST (before clicking anything that might open modals)
 	photoURL, err := extractImageURL(ctx)
 	if err != nil {
@@ -255,19 +260,62 @@ func extractBusinessData(ctx context.Context, pageURL string, business *Business
 	return nil
 }
 
-// extractHours clicks the hours button and extracts the full schedule text
+// extractHours clicks the hours button and extracts the full schedule from table structure
+// Uses multiple fallback strategies for reliability across different Maps page layouts
 func extractHours(ctx context.Context, config *Config) (string, error) {
-	// Click hours button to expand full schedule
-	err := chromedp.Run(ctx,
-		chromedp.Click(`button[data-item-id="oh"]`, chromedp.ByQuery),
-		chromedp.Sleep(1*time.Second),
-	)
-
-	if err != nil {
-		return "", fmt.Errorf("failed to click hours button: %w", err)
+	// Strategy 1: Try multiple button selectors to expand hours panel
+	buttonSelectors := []string{
+		`button[data-item-id="oh"]`,                      // Original selector (works for some pages)
+		`div[jsaction*="pane.openhours"][role="button"]`, // Riomader HTML structure
+		`div.OqCZI[role="button"]`,                       // Class-based fallback
 	}
 
-	// Extract all body text (schedule appears in the modal/panel)
+	var clicked bool
+	for _, selector := range buttonSelectors {
+		selectorCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		err := chromedp.Run(selectorCtx,
+			chromedp.Click(selector, chromedp.ByQuery),
+			chromedp.Sleep(1*time.Second),
+		)
+		cancel()
+
+		if err == nil {
+			clicked = true
+			log.Printf("[Scraper] ✓ Clicked hours button with selector: %s", selector)
+			break
+		}
+	}
+
+	if !clicked {
+		log.Printf("[Scraper] ⚠ Failed to click hours button (may already be expanded)")
+	}
+
+	// Strategy 2: Extract hours directly from table structure using JavaScript
+	var hoursText string
+	err := chromedp.Run(ctx,
+		chromedp.Evaluate(`
+			(() => {
+				const rows = document.querySelectorAll('table.eK4R0e tr.y0skZc');
+				if (rows.length === 0) return '';
+
+				return Array.from(rows).map(row => {
+					const day = row.querySelector('td.ylH6lf')?.textContent?.trim() || '';
+					const time = row.querySelector('td.mxowUb')?.getAttribute('aria-label') ||
+					             row.querySelector('td.mxowUb')?.textContent?.trim() || '';
+					return day && time ? day + ': ' + time : '';
+				}).filter(x => x).join('\n');
+			})()
+		`, &hoursText),
+	)
+
+	if err == nil && hoursText != "" {
+		log.Printf("[Scraper] ✓ Extracted hours from table structure")
+		log.Printf("[Scraper] Raw hours text:\n%s", hoursText)
+		return hoursText, nil
+	}
+
+	// Fallback: Extract from body text (old approach for compatibility)
+	log.Printf("[Scraper] ⚠ Table extraction failed, falling back to body text parsing")
 	var bodyText string
 	err = chromedp.Run(ctx,
 		chromedp.Text("body", &bodyText, chromedp.ByQuery),

@@ -140,6 +140,11 @@ func normalizeText(text string, debug bool) string {
 	// Also handle "closed" / "cerrado"
 	lower = strings.ReplaceAll(lower, "cerrado", "closed")
 
+	// Convert Spanish time format "De HH:MM a HH:MM" to "HH:MM-HH:MM"
+	// Pattern: "de 8:00 a 13:00" → "8:00-13:00"
+	spanishTimeRe := regexp.MustCompile(`de\s+(\d{1,2}:\d{2})\s+a\s+(\d{1,2}:\d{2})`)
+	lower = spanishTimeRe.ReplaceAllString(lower, "$1-$2")
+
 	if debug {
 		log.Printf("[DEBUG] After translation: %q", lower)
 	}
