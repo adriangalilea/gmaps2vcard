@@ -265,7 +265,7 @@ func scrapeWithChromedp(pageURL string, business *BusinessData) error {
 		business.Website = website
 	}
 	if hours != "" {
-		business.Hours = cleanHours(hours)
+		business.Hours = hours
 	}
 
 	return nil
@@ -284,35 +284,6 @@ func cleanAriaLabel(s string) string {
 		}
 	}
 	return s
-}
-
-func cleanHours(s string) string {
-	// Remove footer text
-	s = regexp.MustCompile(`(?i)(Sugerir nuevo horario|Suggest new hours).*`).ReplaceAllString(s, "")
-
-	// Remove standalone "Cerrado/Closed" at the beginning
-	s = regexp.MustCompile(`(?m)^(Cerrado|Closed)\n`).ReplaceAllString(s, "")
-
-	// Replace tabs with spaces
-	s = strings.ReplaceAll(s, "\t", " ")
-
-	// Remove carriage returns
-	s = strings.ReplaceAll(s, "\r", "")
-
-	// Clean up multiple spaces
-	s = regexp.MustCompile(` +`).ReplaceAllString(s, " ")
-
-	// Remove trailing/leading spaces on lines
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimSpace(line)
-	}
-	s = strings.Join(lines, "\n")
-
-	// Remove multiple consecutive blank lines
-	s = regexp.MustCompile(`\n\n+`).ReplaceAllString(s, "\n")
-
-	return strings.TrimSpace(s)
 }
 
 func printBusinessData(business *BusinessData) {
