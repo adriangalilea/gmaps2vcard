@@ -45,20 +45,39 @@ def validate_google_maps_url(url: str) -> str:
 def follow_redirects(url: str) -> str:
     """
     Follow URL redirects and return the final destination URL.
+    Handles Google consent pages by extracting the continue parameter.
     """
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        response = requests.head(url, allow_redirects=True, timeout=10, headers=headers)
-        return response.url
-    except requests.RequestException:
-        # If HEAD fails, try GET
-        try:
-            response = requests.get(url, allow_redirects=True, timeout=10, headers=headers)
-            return response.url
-        except requests.RequestException as e:
-            raise RuntimeError(f"Failed to follow redirect: {e}")
+        response = requests.get(url, allow_redirects=True, timeout=10, headers=headers)
+        final_url = response.url
+
+        # Check if we landed on a consent page
+        if 'consent.google.com' in final_url:
+            parsed = urlparse(final_url)
+            params = parse_qs(parsed.query)
+            if 'continue' in params:
+                # Extract and decode the continue URL
+                continue_url = unquote(params['continue'][0])
+                return continue_url
+
+        return final_url
+    except requests.RequestException as e:
+        raise RuntimeError(f"Failed to follow redirect: {e}")
+
+
+def extract_kgmid_from_url(url: str) -> Optional[str]:
+    """
+    Extract Google Knowledge Graph ID (kgmid) from search URLs.
+    Example: kgmid=/g/1ptz5m3kb
+    """
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    if 'kgmid' in params:
+        return params['kgmid'][0]
+    return None
 
 
 def extract_place_id_from_url(url: str) -> Optional[str]:
@@ -89,12 +108,22 @@ def extract_place_id_from_url(url: str) -> Optional[str]:
 
 def extract_place_name_from_url(url: str) -> Optional[str]:
     """
-    Extract place name from Google Maps URL.
-    Example: https://www.google.com/maps/place/Business+Name/@lat,lng...
+    Extract place name from Google Maps URL or search URL.
+    Examples:
+    - https://www.google.com/maps/place/Business+Name/@lat,lng...
+    - https://www.google.com/search?q=Business+Name&kgmid=...
     """
+    # Try /place/ format first
     match = re.search(r'/place/([^/@?]+)', url)
     if match:
         return unquote(match.group(1)).replace('+', ' ')
+
+    # Try q= parameter from search URLs
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    if 'q' in params:
+        return params['q'][0]
+
     return None
 
 
@@ -109,10 +138,11 @@ def extract_coordinates_from_url(url: str) -> tuple[Optional[str], Optional[str]
     return None, None
 
 
-def get_place_details_from_api(place_id: Optional[str], place_name: Optional[str],
-                                 api_key: str) -> Optional[Dict]:
+def get_place_details_from_api(place_id: Optional[str], kgmid: Optional[str],
+                                 place_name: Optional[str], api_key: str) -> Optional[Dict]:
     """
     Get place details using Google Places API.
+    Tries place_id first, then kgmid, then searches by name.
     """
     if not api_key:
         return None
@@ -124,6 +154,14 @@ def get_place_details_from_api(place_id: Optional[str], place_name: Optional[str
         url = f"{base_url}/details/json"
         params = {
             'place_id': place_id,
+            'fields': 'name,formatted_address,formatted_phone_number,website,geometry',
+            'key': api_key
+        }
+    # Try kgmid as place_id (sometimes works)
+    elif kgmid:
+        url = f"{base_url}/details/json"
+        params = {
+            'place_id': kgmid,
             'fields': 'name,formatted_address,formatted_phone_number,website,geometry',
             'key': api_key
         }
@@ -187,6 +225,63 @@ def get_place_details_from_api(place_id: Optional[str], place_name: Optional[str
     except requests.RequestException as e:
         print(f"Warning: API request failed: {e}", file=sys.stderr)
         return None
+
+
+def extract_business_data_http(url: str) -> Dict:
+    """
+    Extract business data from Google Maps page by parsing embedded JavaScript data.
+    Works for proper /maps/place/ URLs without requiring browser automation.
+    """
+    business_data = {
+        'name': None,
+        'address': None,
+        'phone': None,
+        'website': None,
+        'latitude': None,
+        'longitude': None,
+    }
+
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        html = response.text
+
+        # Extract basic info from URL first
+        business_data['name'] = extract_place_name_from_url(url)
+        lat, lng = extract_coordinates_from_url(url)
+        business_data['latitude'] = lat
+        business_data['longitude'] = lng
+
+        # Google Maps embeds data in JavaScript arrays
+        # Look for common patterns:
+
+        # Address pattern: often in format like ["address text",...]
+        address_match = re.search(r'\["([^"]+)",\d+,\d+,\d+,\d+,\d+\].*?(?:street|address|direccion)', html, re.IGNORECASE)
+        if not address_match:
+            # Try alternative pattern
+            address_match = re.search(r'"([^"]*(?:Calle|Avenida|Street|Ave|Road|Rd)[^"]{10,100})"', html)
+        if address_match:
+            business_data['address'] = address_match.group(1)
+
+        # Phone pattern: look for phone numbers in international format
+        phone_match = re.search(r'"\+?\d{1,4}[\s-]?\d{2,4}[\s-]?\d{2,4}[\s-]?\d{2,4}"', html)
+        if phone_match:
+            business_data['phone'] = phone_match.group(0).strip('"')
+
+        # Website pattern: look for URLs in the data
+        website_match = re.search(r'"(https?://(?:www\.)?[a-zA-Z0-9][a-zA-Z0-9-]+\.[a-zA-Z]{2,}[^"]*)"', html)
+        if website_match:
+            website = website_match.group(1)
+            # Filter out Google's own URLs
+            if not any(domain in website for domain in ['google.com', 'gstatic.com', 'googleapis.com']):
+                business_data['website'] = website
+
+    except requests.RequestException as e:
+        print(f"Warning: HTTP scraping failed: {e}", file=sys.stderr)
+
+    return business_data
 
 
 def extract_business_data_playwright(url: str) -> Dict:
@@ -260,23 +355,29 @@ def extract_business_data_playwright(url: str) -> Dict:
 
 def extract_business_data_basic(url: str) -> Dict:
     """
-    Extract basic business information from URL structure.
-    This is the simplest method but provides limited data.
+    Extract business information using HTTP scraping for Maps URLs,
+    or basic URL parsing for search URLs.
     """
-    business_data = {
-        'name': extract_place_name_from_url(url),
-        'address': None,
-        'phone': None,
-        'website': None,
-        'latitude': None,
-        'longitude': None,
-    }
+    # Check if this is a proper Maps place URL
+    if '/maps/place/' in url:
+        # Use HTTP scraping for full Maps URLs
+        return extract_business_data_http(url)
+    else:
+        # Fall back to URL-only extraction for search URLs
+        business_data = {
+            'name': extract_place_name_from_url(url),
+            'address': None,
+            'phone': None,
+            'website': None,
+            'latitude': None,
+            'longitude': None,
+        }
 
-    lat, lng = extract_coordinates_from_url(url)
-    business_data['latitude'] = lat
-    business_data['longitude'] = lng
+        lat, lng = extract_coordinates_from_url(url)
+        business_data['latitude'] = lat
+        business_data['longitude'] = lng
 
-    return business_data
+        return business_data
 
 
 def generate_vcard(business_data: Dict) -> str:
@@ -403,14 +504,17 @@ def main():
 
         if method == 'api':
             place_id = extract_place_id_from_url(final_url)
+            kgmid = extract_kgmid_from_url(final_url)
             place_name = extract_place_name_from_url(final_url)
 
             if place_id:
                 print(f"  Found Place ID: {place_id}")
+            if kgmid:
+                print(f"  Found Knowledge Graph ID: {kgmid}")
             if place_name:
                 print(f"  Found Place Name: {place_name}")
 
-            business_data = get_place_details_from_api(place_id, place_name, api_key)
+            business_data = get_place_details_from_api(place_id, kgmid, place_name, api_key)
 
             if not business_data or not business_data.get('name'):
                 print("⚠ API method failed, falling back to basic extraction", file=sys.stderr)
@@ -428,9 +532,9 @@ def main():
 
         print_business_data(business_data)
 
-        if not business_data.get('name'):
-            print("\n⚠ Warning: Could not extract business name. vCard may be incomplete.", file=sys.stderr)
-            print("Try using: --method api (recommended) or --method playwright", file=sys.stderr)
+        # Validate we have at least a business name
+        assert business_data.get('name'), \
+            "Could not extract business name. Try: --method api or --method playwright"
 
         # Step 4: Generate vCard
         print(f"\n→ Generating vCard...")
