@@ -21,7 +21,8 @@ go build
 ```
 
 **What you get:**
-- ✅ Complete business data (name, address, phone, website, coordinates)
+- ✅ Complete business data (name, address, phone, website, coordinates, hours)
+- ✅ Smart schedule parsing (Spanish/English, consolidated day ranges)
 - ✅ Single standalone binary
 - ✅ No API keys required
 - ✅ Uses chromedp for reliable scraping
@@ -37,8 +38,13 @@ go build
    - Phone number
    - Website
    - Coordinates
-4. **vCard Generation** - Creates standard vCard 3.0 format
-5. **File Output** - Saves as `BusinessName.vcf`
+   - Business hours
+4. **Schedule Parsing** - Normalizes hours to clean format:
+   - Spanish → English day names
+   - Consolidates consecutive days (Mon-Fri vs 5 separate entries)
+   - Output: "Mon-Fri 08:00-13:00, 15:00-18:00; Sat-Sun Closed"
+5. **vCard Generation** - Creates standard vCard 3.0 format
+6. **File Output** - Saves as `BusinessName.vcf`
 
 ## Supported URL Formats
 
@@ -56,6 +62,7 @@ The tool generates a `.vcf` file with:
 - Phone (TEL)
 - Website (URL)
 - Geographic coordinates (GEO)
+- Business hours (NOTE) - clean formatted schedule
 
 Import this file to:
 - iPhone Contacts app
