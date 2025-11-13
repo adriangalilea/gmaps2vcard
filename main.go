@@ -20,6 +20,7 @@ type BusinessData struct {
 	Address   string
 	Phone     string
 	Website   string
+	Hours     string
 	Latitude  string
 	Longitude string
 }
@@ -185,12 +186,12 @@ func scrapeWithChromedp(pageURL string, business *BusinessData) error {
 	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	var name, address, phone, website string
+	var name, address, phone, website, hours string
 
 	err := chromedp.Run(ctx,
 		chromedp.Navigate(pageURL),
 		chromedp.WaitReady("body"),
-		chromedp.Sleep(2*time.Second), // Wait for dynamic content
+		chromedp.Sleep(3*time.Second), // Wait for dynamic content
 
 		// Extract business name
 		chromedp.Text(`h1`, &name, chromedp.NodeVisible, chromedp.ByQuery),
@@ -204,6 +205,20 @@ func scrapeWithChromedp(pageURL string, business *BusinessData) error {
 		// Extract website
 		chromedp.AttributeValue(`a[data-item-id="authority"]`, "href", &website, nil, chromedp.ByQuery),
 	)
+
+	// Try to extract hours (best effort - don't fail if not found)
+	if err == nil {
+		// First try to click the hours section to expand full schedule
+		chromedp.Run(ctx,
+			chromedp.Click(`div.OqCZI.fontBodyMedium.WVXvdc`, chromedp.ByQuery),
+			chromedp.Sleep(500*time.Millisecond),
+		)
+
+		// Then get the hours text from the expanded section
+		chromedp.Run(ctx,
+			chromedp.Text(`div.OqCZI.fontBodyMedium.WVXvdc`, &hours, chromedp.NodeVisible, chromedp.ByQuery),
+		)
+	}
 
 	if err != nil {
 		return err
@@ -221,6 +236,9 @@ func scrapeWithChromedp(pageURL string, business *BusinessData) error {
 	}
 	if website != "" {
 		business.Website = website
+	}
+	if hours != "" {
+		business.Hours = cleanHours(hours)
 	}
 
 	return nil
@@ -241,12 +259,42 @@ func cleanAriaLabel(s string) string {
 	return s
 }
 
+func cleanHours(s string) string {
+	// Remove footer text
+	s = regexp.MustCompile(`(?i)(Sugerir nuevo horario|Suggest new hours).*`).ReplaceAllString(s, "")
+
+	// Remove standalone "Cerrado/Closed" at the beginning
+	s = regexp.MustCompile(`(?m)^(Cerrado|Closed)\n`).ReplaceAllString(s, "")
+
+	// Replace tabs with spaces
+	s = strings.ReplaceAll(s, "\t", " ")
+
+	// Remove carriage returns
+	s = strings.ReplaceAll(s, "\r", "")
+
+	// Clean up multiple spaces
+	s = regexp.MustCompile(` +`).ReplaceAllString(s, " ")
+
+	// Remove trailing/leading spaces on lines
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimSpace(line)
+	}
+	s = strings.Join(lines, "\n")
+
+	// Remove multiple consecutive blank lines
+	s = regexp.MustCompile(`\n\n+`).ReplaceAllString(s, "\n")
+
+	return strings.TrimSpace(s)
+}
+
 func printBusinessData(business *BusinessData) {
 	fmt.Println("\nExtracted information:")
 	fmt.Printf("  Name: %s\n", orNotFound(business.Name))
 	fmt.Printf("  Address: %s\n", orNotFound(business.Address))
 	fmt.Printf("  Phone: %s\n", orNotFound(business.Phone))
 	fmt.Printf("  Website: %s\n", orNotFound(business.Website))
+	fmt.Printf("  Hours: %s\n", orNotFound(business.Hours))
 	if business.Latitude != "" && business.Longitude != "" {
 		fmt.Printf("  Location: %s, %s\n", business.Latitude, business.Longitude)
 	}
@@ -311,6 +359,13 @@ func generateVCard(business *BusinessData) string {
 		geoValue := fmt.Sprintf("%s;%s", business.Latitude, business.Longitude)
 		card.Set("GEO", &vcard.Field{
 			Value: geoValue,
+		})
+	}
+
+	// Business hours in NOTE field
+	if business.Hours != "" {
+		card.Set(vcard.FieldNote, &vcard.Field{
+			Value: "Hours: " + business.Hours,
 		})
 	}
 
