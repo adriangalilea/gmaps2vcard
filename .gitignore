@@ -1,9 +1,2 @@
-uv.lock
-.venv/
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
+*.vcf
 .DS_Store
