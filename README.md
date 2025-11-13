@@ -24,15 +24,20 @@ go build
 - ✅ Complete business data (name, address, phone, website, coordinates, hours, photo)
 - ✅ Business photo embedded in vCard (works with Apple Contacts/Finder preview)
 - ✅ Smart schedule parsing (Spanish/English, consolidated day ranges)
+- ✅ Intelligent URL normalization with bot detection avoidance
 - ✅ Single standalone binary
 - ✅ No API keys required
 - ✅ Uses chromedp for reliable scraping
-- ✅ Works with share.google links AND full Maps URLs
+- ✅ Works with share.google links AND full Maps URLs (direct URLs most reliable)
 
 ## How It Works
 
 1. **URL Validation** - Validates Google Maps/share.google URLs
-2. **Redirect Following** - Follows share.google redirects to actual Maps URLs
+2. **URL Normalization** - Converts any Google Maps URL to canonical `/maps/place/` format:
+   - Follows redirects with legitimate browser headers
+   - Detects URL type (direct maps/place, search page, or unknown)
+   - Extracts maps/place link from search pages using non-invasive strategies
+   - Uses realistic Chrome/macOS fingerprint for personal use
 3. **chromedp Scraping** - Uses headless Chrome to extract:
    - Business name
    - Address

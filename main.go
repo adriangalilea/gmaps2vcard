@@ -5,18 +5,18 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"net/url"
 	"os"
 	"regexp"
 	"strings"
 	"time"
 
+	"gmaps2vcard/imageextractor"
 	"gmaps2vcard/schedule"
+	"gmaps2vcard/urlnormalizer"
 
 	"github.com/chromedp/chromedp"
 	"github.com/emersion/go-vcard"
-	"gmaps2vcard/imageextractor"
 )
 
 type BusinessData struct {
@@ -56,19 +56,20 @@ func main() {
 	}
 	fmt.Println("✓ Valid Google Maps URL")
 
-	// Follow redirects
-	fmt.Println("→ Following redirects...")
-	finalURL, err := followRedirects(inputURL)
-	if err != nil {
-		log.Fatalf("Error following redirects: %v", err)
+	// Normalize URL to maps/place format
+	fmt.Println("→ Normalizing URL...")
+	urlNormalizer := urlnormalizer.NewNormalizer(urlnormalizer.DefaultConfig())
+	normResult := urlNormalizer.Normalize(inputURL)
+	if !normResult.Success {
+		log.Fatalf("Error normalizing URL: %v", normResult.Error)
 	}
-	if finalURL != inputURL {
-		fmt.Printf("✓ Redirected to: %.80s...\n", finalURL)
-	}
+	fmt.Printf("✓ Normalized to maps/place URL: %.80s...\n", normResult.NormalizedURL)
+
+	mapsURL := normResult.NormalizedURL
 
 	// Extract business data
 	fmt.Println("→ Extracting business data...")
-	business, err := extractBusinessData(finalURL)
+	business, err := extractBusinessData(mapsURL)
 	if err != nil {
 		log.Fatalf("Error extracting data: %v", err)
 	}
@@ -93,7 +94,7 @@ func main() {
 	imageConfig := imageextractor.DefaultConfig()
 	imageConfig.DebugLevel = imageextractor.DebugVerbose
 	extractor := imageextractor.NewExtractor(imageConfig)
-	imageResult := extractor.Extract(finalURL)
+	imageResult := extractor.Extract(mapsURL)
 
 	if imageResult.Found {
 		business.PhotoURL = imageResult.ImageURL
@@ -150,43 +151,6 @@ func isValidGoogleMapsURL(rawURL string) bool {
 	}
 
 	return false
-}
-
-func followRedirects(inputURL string) (string, error) {
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return nil // Allow all redirects
-		},
-		Timeout: 10 * time.Second,
-	}
-
-	req, err := http.NewRequest("GET", inputURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	finalURL := resp.Request.URL.String()
-
-	// Check for consent page
-	if strings.Contains(finalURL, "consent.google.com") {
-		u, err := url.Parse(finalURL)
-		if err != nil {
-			return finalURL, nil
-		}
-		continueURL := u.Query().Get("continue")
-		if continueURL != "" {
-			return continueURL, nil
-		}
-	}
-
-	return finalURL, nil
 }
 
 func extractBusinessData(pageURL string) (*BusinessData, error) {
