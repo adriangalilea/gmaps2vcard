@@ -5,7 +5,7 @@ Convert Google Maps business links to vCard contacts - perfect for quickly savin
 ## Goal
 
 **Input:** `https://share.google/w4UZTre3NvPyC3b3Q`
-**Output:** `.vcf` file with business contact (name, address, phone, website) → ready to import to iCloud contacts
+**Output:** `.vcf` file with business contact (name, address, phone, website, photo, hours) → ready to import to iCloud contacts
 
 ## Quick Start
 
@@ -21,7 +21,8 @@ go build
 ```
 
 **What you get:**
-- ✅ Complete business data (name, address, phone, website, coordinates, hours)
+- ✅ Complete business data (name, address, phone, website, coordinates, hours, photo)
+- ✅ Business photo embedded in vCard (works with Apple Contacts/Finder preview)
 - ✅ Smart schedule parsing (Spanish/English, consolidated day ranges)
 - ✅ Single standalone binary
 - ✅ No API keys required
@@ -39,12 +40,17 @@ go build
    - Website
    - Coordinates
    - Business hours
+   - Business photo
 4. **Schedule Parsing** - Normalizes hours to clean format:
    - Spanish → English day names
    - Consolidates consecutive days (Mon-Fri vs 5 separate entries)
    - Output: "Mon-Fri 08:00-13:00, 15:00-18:00; Sat-Sun Closed"
-5. **vCard Generation** - Creates standard vCard 3.0 format
-6. **File Output** - Saves as `BusinessName.vcf`
+5. **Image Processing** - Downloads and embeds business photo:
+   - Extracts photo URL from Google Maps
+   - Downloads image and encodes to base64
+   - Embeds in vCard for Apple Contacts compatibility
+6. **vCard Generation** - Creates standard vCard 3.0 format
+7. **File Output** - Saves as `BusinessName.vcf`
 
 ## Supported URL Formats
 
@@ -62,6 +68,7 @@ The tool generates a `.vcf` file with:
 - Phone (TEL)
 - Website (URL)
 - Geographic coordinates (GEO)
+- Business photo (PHOTO) - base64-encoded image
 - Business hours (NOTE) - clean formatted schedule
 
 Import this file to:
