@@ -2,8 +2,11 @@ package imageextractor
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -38,10 +41,11 @@ func DefaultConfig() *Config {
 
 // Result contains the extracted image information
 type Result struct {
-	ImageURL  string
-	Found     bool
-	Error     error
-	DebugInfo *DebugInfo
+	ImageURL    string
+	ImageBase64 string
+	Found       bool
+	Error       error
+	DebugInfo   *DebugInfo
 }
 
 // DebugInfo contains detailed debugging information
@@ -220,15 +224,25 @@ func (e *Extractor) Extract(pageURL string) *Result {
 	}
 
 	result.DebugInfo.ExtractionTime = time.Since(extractionStart)
-	result.DebugInfo.TotalTime = time.Since(startTime)
 
 	if !result.Found {
 		result.Error = fmt.Errorf("no image found after trying %d selectors", len(selectors))
 		e.logBasic("✗ Image extraction failed: %v", result.Error)
 	} else {
 		e.logBasic("✓ Image extracted successfully in %v", result.DebugInfo.ExtractionTime)
+
+		// Download and encode the image
+		e.logVerbose("→ Downloading and encoding image...")
+		base64Data, err := e.downloadAndEncode(result.ImageURL)
+		if err != nil {
+			e.logBasic("⚠ Warning: Failed to download/encode image: %v", err)
+		} else {
+			result.ImageBase64 = base64Data
+			e.logVerbose("✓ Image downloaded and encoded (%d bytes)", len(base64Data))
+		}
 	}
 
+	result.DebugInfo.TotalTime = time.Since(startTime)
 	e.logBasic("=== Extraction Complete (total: %v) ===", result.DebugInfo.TotalTime)
 
 	return result
@@ -252,6 +266,31 @@ func (e *Extractor) isValidImageURL(url string) bool {
 	}
 
 	return true
+}
+
+// downloadAndEncode downloads the image and encodes it to base64
+func (e *Extractor) downloadAndEncode(imageURL string) (string, error) {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	resp, err := client.Get(imageURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("bad status code: %d", resp.StatusCode)
+	}
+
+	imageData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read data: %w", err)
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(imageData)
+	return encoded, nil
 }
 
 // PrintDebugInfo prints detailed debugging information
