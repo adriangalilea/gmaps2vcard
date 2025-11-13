@@ -2,13 +2,14 @@ module gmaps2vcard
 
 go 1.24
 
-require golang.org/x/net v0.19.0
+require (
+	github.com/chromedp/chromedp v0.14.2
+	github.com/emersion/go-vcard v0.0.0-20241024213814-c9703dde27ff
+)
 
 require (
 	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327 // indirect
-	github.com/chromedp/chromedp v0.14.2 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
-	github.com/emersion/go-vcard v0.0.0-20241024213814-c9703dde27ff // indirect
 	github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect

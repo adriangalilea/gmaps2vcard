@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,29 +12,40 @@ import (
 	"strings"
 	"time"
 
+	"gmaps2vcard/schedule"
+
 	"github.com/chromedp/chromedp"
 	"github.com/emersion/go-vcard"
 )
 
 type BusinessData struct {
-	Name      string
-	Address   string
-	Phone     string
-	Website   string
-	Hours     string
-	Latitude  string
-	Longitude string
+	Name         string
+	Address      string
+	Phone        string
+	Website      string
+	Hours        string // Raw hours text from scraping
+	HoursClean   string // Formatted hours from schedule parser
+	Latitude     string
+	Longitude    string
 }
 
+var debugSchedule bool
+
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: gmaps2vcard <google-maps-url>")
+	flag.BoolVar(&debugSchedule, "debug-schedule", false, "Enable debug logging for schedule parsing")
+	flag.Parse()
+
+	if flag.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: gmaps2vcard [options] <google-maps-url>")
+		fmt.Fprintln(os.Stderr, "\nOptions:")
+		fmt.Fprintln(os.Stderr, "  -debug-schedule  Enable debug logging for schedule parsing")
 		fmt.Fprintln(os.Stderr, "\nExample:")
 		fmt.Fprintln(os.Stderr, "  gmaps2vcard 'https://share.google/w4UZTre3NvPyC3b3Q'")
+		fmt.Fprintln(os.Stderr, "  gmaps2vcard -debug-schedule 'https://share.google/w4UZTre3NvPyC3b3Q'")
 		os.Exit(1)
 	}
 
-	inputURL := os.Args[1]
+	inputURL := flag.Arg(0)
 
 	// Validate URL
 	if !isValidGoogleMapsURL(inputURL) {
@@ -56,6 +68,21 @@ func main() {
 	business, err := extractBusinessData(finalURL)
 	if err != nil {
 		log.Fatalf("Error extracting data: %v", err)
+	}
+
+	// Parse and format schedule
+	if business.Hours != "" {
+		fmt.Println("→ Parsing schedule...")
+		parsedSchedule, err := schedule.Parse(business.Hours, debugSchedule)
+		if err != nil {
+			log.Printf("⚠ Warning: schedule parsing failed: %v", err)
+		} else {
+			business.HoursClean = parsedSchedule.Format(debugSchedule)
+			if debugSchedule {
+				log.Printf("[DEBUG] Raw hours: %q", business.Hours)
+				log.Printf("[DEBUG] Clean hours: %q", business.HoursClean)
+			}
+		}
 	}
 
 	// Print extracted data
@@ -238,7 +265,7 @@ func scrapeWithChromedp(pageURL string, business *BusinessData) error {
 		business.Website = website
 	}
 	if hours != "" {
-		business.Hours = cleanHours(hours)
+		business.Hours = hours
 	}
 
 	return nil
@@ -259,42 +286,21 @@ func cleanAriaLabel(s string) string {
 	return s
 }
 
-func cleanHours(s string) string {
-	// Remove footer text
-	s = regexp.MustCompile(`(?i)(Sugerir nuevo horario|Suggest new hours).*`).ReplaceAllString(s, "")
-
-	// Remove standalone "Cerrado/Closed" at the beginning
-	s = regexp.MustCompile(`(?m)^(Cerrado|Closed)\n`).ReplaceAllString(s, "")
-
-	// Replace tabs with spaces
-	s = strings.ReplaceAll(s, "\t", " ")
-
-	// Remove carriage returns
-	s = strings.ReplaceAll(s, "\r", "")
-
-	// Clean up multiple spaces
-	s = regexp.MustCompile(` +`).ReplaceAllString(s, " ")
-
-	// Remove trailing/leading spaces on lines
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimSpace(line)
-	}
-	s = strings.Join(lines, "\n")
-
-	// Remove multiple consecutive blank lines
-	s = regexp.MustCompile(`\n\n+`).ReplaceAllString(s, "\n")
-
-	return strings.TrimSpace(s)
-}
-
 func printBusinessData(business *BusinessData) {
 	fmt.Println("\nExtracted information:")
 	fmt.Printf("  Name: %s\n", orNotFound(business.Name))
 	fmt.Printf("  Address: %s\n", orNotFound(business.Address))
 	fmt.Printf("  Phone: %s\n", orNotFound(business.Phone))
 	fmt.Printf("  Website: %s\n", orNotFound(business.Website))
-	fmt.Printf("  Hours: %s\n", orNotFound(business.Hours))
+
+	if business.HoursClean != "" {
+		fmt.Printf("  Hours: %s\n", business.HoursClean)
+	} else if business.Hours != "" {
+		fmt.Printf("  Hours (raw): %s\n", business.Hours)
+	} else {
+		fmt.Printf("  Hours: (not found)\n")
+	}
+
 	if business.Latitude != "" && business.Longitude != "" {
 		fmt.Printf("  Location: %s, %s\n", business.Latitude, business.Longitude)
 	}
@@ -362,10 +368,14 @@ func generateVCard(business *BusinessData) string {
 		})
 	}
 
-	// Business hours in NOTE field
-	if business.Hours != "" {
+	// Business hours in NOTE field (prefer clean format)
+	hoursToUse := business.HoursClean
+	if hoursToUse == "" {
+		hoursToUse = business.Hours
+	}
+	if hoursToUse != "" {
 		card.Set(vcard.FieldNote, &vcard.Field{
-			Value: "Hours: " + business.Hours,
+			Value: "Hours: " + hoursToUse,
 		})
 	}
 
