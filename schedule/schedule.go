@@ -111,6 +111,10 @@ func normalizeText(text string, debug bool) string {
 	text = strings.ReplaceAll(text, "\u2013", "-") // en-dash
 	text = strings.ReplaceAll(text, "\u2014", "-") // em-dash
 
+	// Normalize special space characters to regular space
+	text = strings.ReplaceAll(text, "\u202f", " ") // narrow no-break space
+	text = strings.ReplaceAll(text, "\u00a0", " ") // non-breaking space
+
 	// Normalize whitespace
 	text = strings.ReplaceAll(text, "\t", " ")
 	text = strings.ReplaceAll(text, "\r", "")
@@ -145,11 +149,99 @@ func normalizeText(text string, debug bool) string {
 	spanishTimeRe := regexp.MustCompile(`de\s+(\d{1,2}:\d{2})\s+a\s+(\d{1,2}:\d{2})`)
 	lower = spanishTimeRe.ReplaceAllString(lower, "$1-$2")
 
+	// Convert English AM/PM format to 24h
+	// Pattern: "8 am to 1 pm" or "8am to 1pm" or "8:00 am to 1:00 pm"
+	lower = convertAMPMTo24h(lower, debug)
+
 	if debug {
 		log.Printf("[DEBUG] After translation: %q", lower)
 	}
 
 	return lower
+}
+
+// convertAMPMTo24h converts AM/PM time formats to 24h format
+func convertAMPMTo24h(text string, debug bool) string {
+	// Handle "X to Y pm" where X has no am/pm marker (infer from Y)
+	// Pattern: "3 to 7 pm" → "15:00 to 19:00"
+	inferredRe := regexp.MustCompile(`(\d{1,2})(?::(\d{2}))?\s+to\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)`)
+	text = inferredRe.ReplaceAllStringFunc(text, func(match string) string {
+		parts := inferredRe.FindStringSubmatch(match)
+		if len(parts) < 6 {
+			return match
+		}
+
+		hour1 := parts[1]
+		min1 := parts[2]
+		if min1 == "" {
+			min1 = "00"
+		}
+		hour2 := parts[3]
+		min2 := parts[4]
+		if min2 == "" {
+			min2 = "00"
+		}
+		ampm := parts[5]
+
+		h1, h2 := 0, 0
+		fmt.Sscanf(hour1, "%d", &h1)
+		fmt.Sscanf(hour2, "%d", &h2)
+
+		// Apply am/pm to both times (infer first from second)
+		if ampm == "pm" {
+			if h1 != 12 {
+				h1 += 12
+			}
+			if h2 != 12 {
+				h2 += 12
+			}
+		} else if ampm == "am" {
+			if h1 == 12 {
+				h1 = 0
+			}
+			if h2 == 12 {
+				h2 = 0
+			}
+		}
+
+		return fmt.Sprintf("%02d:%s to %02d:%s", h1, min1, h2, min2)
+	})
+
+	// Match patterns like "8 am", "8am", "8:00 am", "8:00am"
+	ampmTimeRe := regexp.MustCompile(`(\d{1,2})(?::(\d{2}))?\s*(am|pm)`)
+
+	// Convert remaining AM/PM times to 24h format
+	text = ampmTimeRe.ReplaceAllStringFunc(text, func(match string) string {
+		parts := ampmTimeRe.FindStringSubmatch(match)
+		if len(parts) < 4 {
+			return match
+		}
+
+		hour := parts[1]
+		minute := parts[2]
+		if minute == "" {
+			minute = "00"
+		}
+		ampm := parts[3]
+
+		hourNum := 0
+		fmt.Sscanf(hour, "%d", &hourNum)
+
+		if ampm == "pm" && hourNum != 12 {
+			hourNum += 12
+		} else if ampm == "am" && hourNum == 12 {
+			hourNum = 0
+		}
+
+		return fmt.Sprintf("%02d:%s", hourNum, minute)
+	})
+
+	// Convert "to" separator to hyphen for time ranges
+	// Pattern: "08:00 to 13:00" → "08:00-13:00"
+	toSeparatorRe := regexp.MustCompile(`(\d{1,2}:\d{2})\s+to\s+(\d{1,2}:\d{2})`)
+	text = toSeparatorRe.ReplaceAllString(text, "$1-$2")
+
+	return text
 }
 
 // parseScheduleText extracts day -> time ranges mapping
