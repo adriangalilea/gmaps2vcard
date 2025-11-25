@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"gmaps2vcard/imageextractor"
 	"gmaps2vcard/schedule"
@@ -197,16 +198,19 @@ func generateVCard(business *scraper.BusinessData, hoursClean, photoBase64 strin
 		})
 	}
 
-	// Business hours
+	// Note field: business hours + creation date
+	var noteLines []string
 	hoursToUse := hoursClean
 	if hoursToUse == "" {
 		hoursToUse = business.Hours
 	}
 	if hoursToUse != "" {
-		card.Set(vcard.FieldNote, &vcard.Field{
-			Value: "Hours: " + hoursToUse,
-		})
+		noteLines = append(noteLines, "Hours: "+hoursToUse)
 	}
+	noteLines = append(noteLines, "Added: "+time.Now().Format("2006-01-02"))
+	card.Set(vcard.FieldNote, &vcard.Field{
+		Value: strings.Join(noteLines, "\\n"),
+	})
 
 	// Encode to string
 	var buf strings.Builder
