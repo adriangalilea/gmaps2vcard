@@ -106,6 +106,11 @@ func Extract(inputURL string, config *Config) (*BusinessData, error) {
 		mapsPlaceURL = extractedURL
 		log.Printf("[Scraper] Extracted maps/place URL: %.80s...", mapsPlaceURL)
 
+	} else if u.Query().Get("ftid") != "" || u.Query().Get("cid") != "" {
+		// Direct place ID URL (ftid or cid parameter) - chromedp will render the place page
+		log.Printf("[Scraper] Detected place ID URL (ftid/cid parameter)")
+		mapsPlaceURL = finalURL
+
 	} else {
 		return nil, fmt.Errorf("unknown Google Maps URL type: %s", u.Path)
 	}
